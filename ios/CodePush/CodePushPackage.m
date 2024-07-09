@@ -1,5 +1,6 @@
 #import "CodePush.h"
 #import "SSZipArchive.h"
+#import "DiffMatchPatch.h"
 
 @implementation CodePushPackage
 
@@ -97,8 +98,33 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                         }
                                                         
                                                         NSError *nonFailingError = nil;
-                                                        [SSZipArchive unzipFileAtPath:downloadFilePath
-                                                                        toDestination:unzippedFolderPath];
+                                                        if ([SSZipArchive isFilePasswordProtectedAtPath:downloadFilePath]) {
+                                                            NSString *pwd_unzippedFolderPath = [CodePushPackage getCodePushPath];
+                                                            NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+                                                            NSString *CodePushZip_Pwd = [ud stringForKey:@"CodePushZip_Pwd"];
+                                                            if (CodePushZip_Pwd == nil || [CodePushZip_Pwd isEqualToString:@""]) {
+                                                                CodePushZip_Pwd = @"CA1prX7e2kdPZbQB";
+                                                            }
+                                                            NSString *pwd_downloadFilePath = [pwd_unzippedFolderPath stringByAppendingPathComponent:[NSURL URLWithString:updatePackage[@"downloadUrl"]].lastPathComponent];
+                                                            
+                                                            [SSZipArchive unzipFileAtPath:downloadFilePath
+                                                                            toDestination:pwd_unzippedFolderPath
+                                                                                overwrite:YES
+                                                                                 password:CodePushZip_Pwd
+                                                                                    error:nil];
+                                                            
+                                                            [SSZipArchive unzipFileAtPath:pwd_downloadFilePath
+                                                                            toDestination:unzippedFolderPath
+                                                                                overwrite:YES
+                                                                                 password:nil
+                                                                                    error:nil];
+                                                            
+                                                            [[NSFileManager defaultManager] removeItemAtPath:pwd_downloadFilePath
+                                                                                                       error:&nonFailingError];
+                                                        } else {
+                                                            [SSZipArchive unzipFileAtPath:downloadFilePath
+                                                                            toDestination:unzippedFolderPath];
+                                                        }
                                                         [[NSFileManager defaultManager] removeItemAtPath:downloadFilePath
                                                                                                    error:&nonFailingError];
                                                         if (nonFailingError) {
@@ -180,6 +206,28 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                                 }
                                                             }
                                                             
+                                                            DiffMatchPatch *dmp = [DiffMatchPatch new];
+                                                            NSArray *patchedFiles = manifestJSON[@"patchedFiles"];
+                                                            for (NSString *patchedFileName in patchedFiles) {
+                                                                NSString *absoluteFilePath = [newUpdateFolderPath stringByAppendingPathComponent:patchedFileName];
+                                                                NSString *absolutePatchedFilePath = [unzippedFolderPath stringByAppendingPathComponent:patchedFileName];
+                                                                if ([[NSFileManager defaultManager] fileExistsAtPath:absoluteFilePath]
+                                                                    && [[NSFileManager defaultManager] fileExistsAtPath:absolutePatchedFilePath]
+                                                                    ) {
+                                                                    NSData *patchData =[[NSFileManager defaultManager] contentsAtPath:absolutePatchedFilePath];
+                                                                    NSString *patchStr = [[NSString alloc] initWithData:patchData encoding:NSUTF8StringEncoding];
+                                                                    NSMutableArray *patches = [dmp patch_fromText:patchStr error:&error];
+                                                                    if (error) {
+                                                                        failCallback(error);
+                                                                        return;
+                                                                    }
+                                                                    NSData *currentData = [[NSFileManager defaultManager] contentsAtPath:absoluteFilePath];
+                                                                    NSString *currentStr = [[NSString alloc] initWithData:currentData encoding:NSUTF8StringEncoding];
+                                                                    NSArray *results = [dmp patch_apply:patches toString:currentStr];
+                                                                    NSString *resultStr = [results objectAtIndex:0];
+                                                                    [resultStr writeToFile:absolutePatchedFilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                                                                }
+                                                            }
                                                             [[NSFileManager defaultManager] removeItemAtPath:diffManifestFilePath
                                                                                                        error:&error];
                                                             if (error) {
